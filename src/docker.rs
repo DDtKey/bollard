@@ -90,7 +90,15 @@ pub(crate) enum ClientType {
     SSL,
     #[cfg(windows)]
     NamedPipe,
+    Callback {
+        scheme: String,
+    },
 }
+
+pub type CallbackRetTy =
+    Pin<Box<dyn Future<Output = Result<Response<hyper::body::Incoming>, Error>> + Send>>;
+/// The type of the callback for custom transport.
+pub type CallbackTy = Box<dyn Fn(Request<BodyType>) -> CallbackRetTy + Send + Sync>;
 
 /// Transport is the type representing the means of communication
 /// with the Docker daemon.
@@ -117,6 +125,9 @@ pub(crate) enum Transport {
     Mock {
         client: Client<yup_hyper_mock::HostToReplyConnector, BodyType>,
     },
+    Callback {
+        callback: CallbackTy,
+    },
 }
 
 impl fmt::Debug for Transport {
@@ -131,6 +142,7 @@ impl fmt::Debug for Transport {
             Transport::NamedPipe { .. } => write!(f, "NamedPipe"),
             #[cfg(test)]
             Transport::Mock { .. } => write!(f, "Mock"),
+            Transport::Callback { .. } => write!(f, "Callback"),
         }
     }
 }
@@ -578,6 +590,86 @@ impl Docker {
         let docker = Docker {
             transport: Arc::new(transport),
             client_type: ClientType::Http,
+            client_addr,
+            client_timeout: timeout,
+            version: Arc::new((
+                AtomicUsize::new(client_version.major_version),
+                AtomicUsize::new(client_version.minor_version),
+            )),
+        };
+
+        Ok(docker)
+    }
+
+    /// Connect using callback transport.
+    ///
+    /// # Arguments
+    ///
+    ///  - `transport`: transport.
+    ///  - `timeout`: the read/write timeout (seconds) to use for every hyper connection
+    ///  - `client_version`: the client version to communicate with the server.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use bollard::{API_DEFAULT_VERSION, Docker, BollardRequest};
+    /// use futures_util::future::TryFutureExt;
+    /// use futures_util::FutureExt;
+
+    /// let http_connector = hyper_util::client::legacy::connect::HttpConnector::new();
+    ///
+    /// let mut client_builder = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new());
+    /// client_builder.pool_max_idle_per_host(0);
+    ///
+    /// let client = std::sync::Arc::new(client_builder.build(http_connector));
+    ///
+    /// let connection = Docker::connect_with_callback(
+    ///     Box::new(move |req: BollardRequest| {
+    ///         let client = std::sync::Arc::clone(&client);
+    ///         Box::pin(async move {
+    ///             let (p, b) = req.into_parts();
+    ///             // let _prev = p.headers.insert("host", host);
+    ///             // let mut uri = p.uri.into_parts();
+    ///             //uri.path_and_query = uri.path_and_query.map(|paq|
+    ///             //   uri::PathAndQuery::try_from("/docker".to_owned() + paq.as_str())
+    ///             // ).transpose().map_err(bollard::errors::Error::from)?;
+    ///             // p.uri = uri.try_into().map_err(bollard::errors::Error::from)?;
+    ///             let req = BollardRequest::from_parts(p, b);
+    ///             client.request(req).await.map_err(bollard::errors::Error::from)
+    ///         })
+    ///     }),
+    ///     Some("http://my-custom-docker-server:2735"),
+    ///     4,
+    ///     bollard::API_DEFAULT_VERSION,
+    /// ).unwrap();
+    ///
+    /// connection.ping()
+    ///   .map_ok(|_| Ok::<_, ()>(println!("Connected!")));
+    /// ```
+    pub fn connect_with_callback<S: Into<String>>(
+        callback: CallbackTy,
+        client_addr: Option<S>,
+        timeout: u64,
+        client_version: &ClientVersion,
+    ) -> Result<Docker, Error> {
+        let client_addr = client_addr.map(Into::into).unwrap_or_default();
+        let scheme = client_addr
+            .as_str()
+            .split("://")
+            .next()
+            .map(|s| s.to_owned())
+            .unwrap_or_default();
+        let client_addr = client_addr
+            .trim_start_matches("unix://")
+            .trim_start_matches("npipe://")
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_start_matches("tcp://")
+            .to_owned();
+        let transport = Transport::Callback { callback };
+        let docker = Docker {
+            transport: Arc::new(transport),
+            client_type: ClientType::Callback { scheme },
             client_addr,
             client_timeout: timeout,
             version: Arc::new((
@@ -1255,6 +1347,13 @@ impl Docker {
             Transport::NamedPipe { ref client } => client.request(req),
             #[cfg(test)]
             Transport::Mock { ref client } => client.request(req),
+            Transport::Callback { ref callback } => {
+                return match tokio::time::timeout(Duration::from_secs(timeout), callback(req)).await
+                {
+                    Ok(v) => Ok(v?),
+                    Err(_) => Err(RequestTimeoutError),
+                };
+            }
         };
 
         match tokio::time::timeout(Duration::from_secs(timeout), request).await {
@@ -1309,6 +1408,7 @@ impl Docker {
     }
 }
 
+/// Either a stream or a full response
 pub(crate) type BodyType = http_body_util::Either<
     Full<Bytes>,
     StreamBody<Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, Infallible>> + Send>>>,
@@ -1317,3 +1417,6 @@ pub(crate) type BodyType = http_body_util::Either<
 pub(crate) fn body_stream(body: impl Stream<Item = Bytes> + Send + 'static) -> BodyType {
     BodyType::Right(StreamBody::new(Box::pin(body.map(|a| Ok(Frame::data(a))))))
 }
+
+/// A request from bollard used in callbacks
+pub type BollardRequest = Request<BodyType>;
