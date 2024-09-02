@@ -637,7 +637,7 @@ impl Docker {
     /// let client = std::sync::Arc::new(client_builder.build(http_connector));
     ///
     /// let connection = Docker::connect_with_callback(
-    ///     move |req: BollardRequest| {
+    ///     Box::new(move |req: BollardRequest| {
     ///         let client = std::sync::Arc::clone(&client);
     ///         Box::pin(async move {
     ///             let (p, b) = req.into_parts();
@@ -650,7 +650,7 @@ impl Docker {
     ///             let req = BollardRequest::from_parts(p, b);
     ///             client.request(req).await.map_err(bollard::errors::Error::from)
     ///         })
-    ///     },
+    ///     }),
     ///     Some("http://my-custom-docker-server:2735"),
     ///     4,
     ///     bollard::API_DEFAULT_VERSION,
@@ -659,8 +659,8 @@ impl Docker {
     /// connection.ping()
     ///   .map_ok(|_| Ok::<_, ()>(println!("Connected!")));
     /// ```
-    pub fn connect_with_callback<S: Into<String>, CB: CallbackTransport + 'static>(
-        callback: CB,
+    pub fn connect_with_callback<S: Into<String>>(
+        callback: Box<dyn CallbackTransport>,
         client_addr: Option<S>,
         timeout: u64,
         client_version: &ClientVersion,
@@ -671,7 +671,6 @@ impl Docker {
             .unwrap_or(("", client_addr.as_str()));
         let client_addr = client_addr.to_owned();
         let scheme = scheme.to_owned();
-        let callback = Box::new(callback);
         let transport = Transport::Callback { callback };
         let docker = Docker {
             transport: Arc::new(transport),
