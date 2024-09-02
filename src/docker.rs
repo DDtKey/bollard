@@ -95,10 +95,23 @@ pub(crate) enum ClientType {
     },
 }
 
-pub type CallbackRetTy =
+type CallbackRetTy =
     Pin<Box<dyn Future<Output = Result<Response<hyper::body::Incoming>, Error>> + Send>>;
 /// The type of the callback for custom transport.
-pub type CallbackTy = Box<dyn Fn(Request<BodyType>) -> CallbackRetTy + Send + Sync>;
+type CallbackTy = Box<dyn Fn(Request<BodyType>) -> CallbackRetTy + Send + Sync>;
+
+/// Callback transport trait
+pub trait CallbackTransport: Send + Sync {
+    /// Make a request, this returns a future
+    fn request(&self, request: Request<BodyType>) -> CallbackRetTy;
+}
+
+// auto impl for Fn(Request)
+impl CallbackTransport for CallbackTy {
+    fn request(&self, request: Request<BodyType>) -> CallbackRetTy {
+        self(request)
+    }
+}
 
 /// Transport is the type representing the means of communication
 /// with the Docker daemon.
@@ -126,7 +139,7 @@ pub(crate) enum Transport {
         client: Client<yup_hyper_mock::HostToReplyConnector, BodyType>,
     },
     Callback {
-        callback: CallbackTy,
+        callback: Box<dyn CallbackTransport>,
     },
 }
 
@@ -624,7 +637,7 @@ impl Docker {
     /// let client = std::sync::Arc::new(client_builder.build(http_connector));
     ///
     /// let connection = Docker::connect_with_callback(
-    ///     Box::new(move |req: BollardRequest| {
+    ///     move |req: BollardRequest| {
     ///         let client = std::sync::Arc::clone(&client);
     ///         Box::pin(async move {
     ///             let (p, b) = req.into_parts();
@@ -637,7 +650,7 @@ impl Docker {
     ///             let req = BollardRequest::from_parts(p, b);
     ///             client.request(req).await.map_err(bollard::errors::Error::from)
     ///         })
-    ///     }),
+    ///     },
     ///     Some("http://my-custom-docker-server:2735"),
     ///     4,
     ///     bollard::API_DEFAULT_VERSION,
@@ -646,8 +659,8 @@ impl Docker {
     /// connection.ping()
     ///   .map_ok(|_| Ok::<_, ()>(println!("Connected!")));
     /// ```
-    pub fn connect_with_callback<S: Into<String>>(
-        callback: CallbackTy,
+    pub fn connect_with_callback<S: Into<String>, CB: CallbackTransport + 'static>(
+        callback: CB,
         client_addr: Option<S>,
         timeout: u64,
         client_version: &ClientVersion,
@@ -658,6 +671,7 @@ impl Docker {
             .unwrap_or(("", client_addr.as_str()));
         let client_addr = client_addr.to_owned();
         let scheme = scheme.to_owned();
+        let callback = Box::new(callback);
         let transport = Transport::Callback { callback };
         let docker = Docker {
             transport: Arc::new(transport),
@@ -1340,7 +1354,11 @@ impl Docker {
             #[cfg(test)]
             Transport::Mock { ref client } => client.request(req),
             Transport::Callback { ref callback } => {
-                return match tokio::time::timeout(Duration::from_secs(timeout), callback(req)).await
+                return match tokio::time::timeout(
+                    Duration::from_secs(timeout),
+                    callback.request(req),
+                )
+                .await
                 {
                     Ok(v) => Ok(v?),
                     Err(_) => Err(RequestTimeoutError),
