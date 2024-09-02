@@ -653,19 +653,11 @@ impl Docker {
         client_version: &ClientVersion,
     ) -> Result<Docker, Error> {
         let client_addr = client_addr.map(Into::into).unwrap_or_default();
-        let scheme = client_addr
-            .as_str()
-            .split("://")
-            .next()
-            .map(|s| s.to_owned())
-            .unwrap_or_default();
-        let client_addr = client_addr
-            .trim_start_matches("unix://")
-            .trim_start_matches("npipe://")
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .trim_start_matches("tcp://")
-            .to_owned();
+        let (scheme, client_addr) = client_addr
+            .split_once("://")
+            .unwrap_or(("", client_addr.as_str()));
+        let client_addr = client_addr.to_owned();
+        let scheme = scheme.to_owned();
         let transport = Transport::Callback { callback };
         let docker = Docker {
             transport: Arc::new(transport),
