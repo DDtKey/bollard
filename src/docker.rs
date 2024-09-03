@@ -630,7 +630,6 @@ impl Docker {
     /// use bollard::{API_DEFAULT_VERSION, Docker, BollardRequest};
     /// use futures_util::future::TryFutureExt;
     /// use futures_util::FutureExt;
-
     /// let http_connector = hyper_util::client::legacy::connect::HttpConnector::new();
     ///
     /// let mut client_builder = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new());
@@ -643,12 +642,7 @@ impl Docker {
     ///         let client = std::sync::Arc::clone(&client);
     ///         Box::pin(async move {
     ///             let (p, b) = req.into_parts();
-    ///             // let _prev = p.headers.insert("host", host);
-    ///             // let mut uri = p.uri.into_parts();
-    ///             //uri.path_and_query = uri.path_and_query.map(|paq|
-    ///             //   uri::PathAndQuery::try_from("/docker".to_owned() + paq.as_str())
-    ///             // ).transpose().map_err(bollard::errors::Error::from)?;
-    ///             // p.uri = uri.try_into().map_err(bollard::errors::Error::from)?;
+    ///             // do something
     ///             let req = BollardRequest::from_parts(p, b);
     ///             client.request(req).await.map_err(bollard::errors::Error::from)
     ///         })
