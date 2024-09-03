@@ -97,8 +97,6 @@ pub(crate) enum ClientType {
 
 type CallbackRetTy =
     Pin<Box<dyn Future<Output = Result<Response<hyper::body::Incoming>, Error>> + Send>>;
-/// The type of the callback for custom transport.
-type CallbackTy = Box<dyn Fn(Request<BodyType>) -> CallbackRetTy + Send + Sync>;
 
 /// Callback transport trait
 pub trait CallbackTransport: Send + Sync {
@@ -106,10 +104,13 @@ pub trait CallbackTransport: Send + Sync {
     fn request(&self, request: Request<BodyType>) -> CallbackRetTy;
 }
 
-// auto impl for Fn(Request)
-impl CallbackTransport for CallbackTy {
+// auto impl for Fn(Request) -> Future<Output = Result<_, _>
+impl<Callback, ReturnTy> CallbackTransport for Callback
+where Callback: Fn(Request<BodyType>) -> ReturnTy + Send + Sync,
+ReturnTy: Future<Output = Result<Response<hyper::body::Incoming>, Error>> + Send + 'static
+{
     fn request(&self, request: Request<BodyType>) -> CallbackRetTy {
-        self(request)
+        Box::pin(self(request))
     }
 }
 
